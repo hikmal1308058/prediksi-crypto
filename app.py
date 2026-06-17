@@ -5,6 +5,8 @@ import pickle
 import matplotlib.pyplot as plt
 from tensorflow.keras.models import load_model
 import os
+import yfinance as yf
+from datetime import datetime
 
 # ===== CONFIG =====
 st.set_page_config(
@@ -86,6 +88,59 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ===== AUTO-UPDATE DATA =====
+def auto_update_data():
+    """
+    Cek apakah data harian sudah up-to-date. Jika data terakhir lebih dari
+    1 hari yang lalu, tarik data baru dari yFinance dan gabungkan ke CSV.
+    Return: (status: str, jumlah_baris_baru: int)
+    """
+    path_data = 'data/btc_harian.csv'
+    df_cek = pd.read_csv(path_data)
+    tanggal_terakhir = pd.to_datetime(df_cek['Date'].iloc[-1])
+    hari_ini = datetime.now()
+
+    if (hari_ini - tanggal_terakhir).days <= 1:
+        return "up_to_date", 0
+
+    try:
+        btc_baru = yf.download(
+            "BTC-USD",
+            start=str(tanggal_terakhir.date()),
+            end=str(hari_ini.date()),
+            auto_adjust=True,
+            progress=False
+        )
+    except Exception:
+        return "gagal_fetch", 0
+
+    if len(btc_baru) == 0:
+        return "tidak_ada_data_baru", 0
+
+    # Flatten MultiIndex kolom (kasus yfinance versi baru)
+    if isinstance(btc_baru.columns, pd.MultiIndex):
+        btc_baru.columns = btc_baru.columns.get_level_values(0)
+
+    btc_baru = btc_baru[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+    btc_baru.index.name = 'Date'
+    btc_baru = btc_baru.reset_index()
+    btc_baru['Date'] = pd.to_datetime(btc_baru['Date']).dt.strftime('%Y-%m-%d')
+
+    df_gabung = pd.concat([df_cek, btc_baru], ignore_index=True)
+    df_gabung = df_gabung.dropna(subset=['Date', 'Close']).drop_duplicates(subset='Date')
+    df_gabung = df_gabung.sort_values('Date').reset_index(drop=True)
+
+    baris_sebelum = len(df_cek)
+    df_gabung.to_csv(path_data, index=False)
+    baris_baru = len(df_gabung) - baris_sebelum
+
+    return "berhasil", baris_baru
+
+
+# Jalankan SEBELUM load_everything() (yang di-cache), supaya CSV
+# sudah versi terbaru saat dimuat ke memori.
+status_update, jumlah_baru = auto_update_data()
+
 # ===== LOAD =====
 @st.cache_resource
 def load_everything():
@@ -164,6 +219,16 @@ with st.sidebar:
     st.metric("Harga BTC", f"${harga_terakhir:,.0f}", f"{perubahan:+.2f}%")
     st.metric("Prediksi Besok", f"${pred[0]:,.0f}",
               f"{((pred[0]-harga_terakhir)/harga_terakhir*100):+.2f}%")
+
+    # Indikator status auto-update data
+    if status_update == "berhasil":
+        st.caption(f"🔄 Data diperbarui · +{jumlah_baru} baris baru")
+    elif status_update == "gagal_fetch":
+        st.caption("⚠️ Gagal ambil data terbaru dari yFinance")
+    elif status_update == "tidak_ada_data_baru":
+        st.caption("ℹ️ Tidak ada data baru tersedia")
+    else:
+        st.caption("✅ Data sudah terbaru")
 
     st.divider()
     st.markdown(f"""
