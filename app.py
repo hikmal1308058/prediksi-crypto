@@ -105,13 +105,19 @@ def auto_update_data():
         return "up_to_date", 0
 
     try:
+        # Ambil data dari H+1 supaya tidak mengulang baris terakhir yang sudah ada,
+        # dan tambahkan 1 hari pada end karena yfinance parameter end bersifat eksklusif.
+        tanggal_mulai = tanggal_terakhir + pd.Timedelta(days=1)
+        tanggal_akhir = hari_ini + pd.Timedelta(days=1)
+
         btc_baru = yf.download(
             "BTC-USD",
-            start=str(tanggal_terakhir.date()),
-            end=str(hari_ini.date()),
+            start=str(tanggal_mulai.date()),
+            end=str(tanggal_akhir.date()),
             auto_adjust=True,
             progress=False
         )
+
     except Exception:
         return "gagal_fetch", 0
 
