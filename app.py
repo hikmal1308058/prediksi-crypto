@@ -7,6 +7,7 @@ from tensorflow.keras.models import load_model
 import os
 import yfinance as yf
 from datetime import datetime
+from sklearn.metrics import mean_absolute_error, r2_score
 
 # ===== CONFIG =====
 st.set_page_config(
@@ -114,6 +115,7 @@ def auto_update_data():
     except Exception:
         return "gagal_fetch", 0
 
+
     if len(btc_baru) == 0:
         return "tidak_ada_data_baru", 0
 
@@ -142,13 +144,45 @@ def auto_update_data():
 status_update, jumlah_baru = auto_update_data()
 
 # ===== LOAD =====
+def hitung_evaluasi(model, scaler, df, lookback=60):
+    """
+    Hitung ulang MAE & R2 dari 20% data terakhir (data test), persis
+    seperti skema split di train.py, supaya metrik di dashboard selalu
+    sinkron dengan model yang sedang dipakai (tidak perlu update manual).
+    """
+    harga = df['Close'].values.reshape(-1, 1)
+    harga_scaled = scaler.transform(harga)
+
+    X, y = [], []
+    for i in range(lookback, len(harga_scaled)):
+        X.append(harga_scaled[i - lookback:i, 0])
+        y.append(harga_scaled[i, 0])
+    X, y = np.array(X), np.array(y)
+    X = X.reshape(X.shape[0], X.shape[1], 1)
+
+    split = int(len(X) * 0.8)
+    X_test, y_test = X[split:], y[split:]
+
+    if len(X_test) == 0:
+        return None, None
+
+    y_pred_scaled = model.predict(X_test, verbose=0)
+    y_pred = scaler.inverse_transform(y_pred_scaled)
+    y_actual = scaler.inverse_transform(y_test.reshape(-1, 1))
+
+    mae = mean_absolute_error(y_actual, y_pred)
+    r2 = r2_score(y_actual, y_pred)
+    return mae, r2
+
+
 @st.cache_resource
 def load_everything():
     model = load_model('model_lstm.keras')
     with open('scaler.pkl', 'rb') as f:
         scaler = pickle.load(f)
     df = pd.read_csv('data/btc_harian.csv')
-    return model, scaler, df
+    mae, r2 = hitung_evaluasi(model, scaler, df)
+    return model, scaler, df, mae, r2
 
 # ===== PREDIKSI =====
 def prediksi(model, scaler, df, hari=7):
@@ -177,7 +211,8 @@ def load_jurnal():
 def simpan_jurnal(df_j):
     df_j.to_csv(JURNAL_FILE, index=False)
 
-model, scaler, df = load_everything()
+model, scaler, df, mae_model, r2_model = load_everything()
+r2_pct = f"{r2_model*100:.1f}%" if r2_model is not None else "N/A"
 
 harga_terakhir = df['Close'].iloc[-1]
 harga_kemarin  = df['Close'].iloc[-2]
@@ -250,7 +285,7 @@ with st.sidebar:
     <div style='font-size:12px; color:#475569'>
       <b style='color:#93c5fd'>Model:</b> LSTM<br>
       <b style='color:#93c5fd'>Dataset:</b> 2017–{tahun_akhir}<br>
-      <b style='color:#93c5fd'>R² Score:</b> 38.4%<br>
+      <b style='color:#93c5fd'>R² Score:</b> {r2_pct}<br>
       <b style='color:#93c5fd'>Data terakhir:</b> {last_date}
     </div>
     """, unsafe_allow_html=True)
@@ -381,7 +416,7 @@ with tab2:
            color:{warna_s}; margin-bottom:8px'>{sinyal}</div>
       <div style='font-size:15px; color:#93c5fd'>
         Perubahan 7 hari: <b style='color:{warna_s}'>{chg7:+.2f}%</b>
-        &nbsp;|&nbsp; Confidence: 38.4%
+        &nbsp;|&nbsp; Confidence: {r2_pct}
       </div>
     </div>
     """, unsafe_allow_html=True)
